@@ -3,3 +3,5 @@ pandasai-litellm
 litellm
 google-generativeai
 streamlit
+langchain
+langchain-openai

@@ -1,3 +1,5 @@
+#2025.09.02 konlo.na
+# image 출력하도록 수정함. 
 import os
 import pandas as pd
 import streamlit as st
@@ -5,6 +7,8 @@ from pandasai import SmartDataframe, config
 from pandasai_litellm.litellm import LiteLLM
 import matplotlib.pyplot as plt
 from PIL import Image
+
+
 
 # 1. API 키 설정 (실제 코드에서는 환경변수로 받는 것이 안전)
 os.environ["GOOGLE_API_KEY"] = "AIzaSyAXq7IKW6QToj9MOeTA3uvADiAL3t8vv3c"
