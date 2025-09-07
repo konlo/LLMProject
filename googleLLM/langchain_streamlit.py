@@ -2,13 +2,14 @@ import os
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-load_dotenv()  # .env 로드
+
 
 # LangChain + Gemini
 from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
+load_dotenv()  # .env 로드
 
 # Check if GOOGLE_API_KEY is set in environment variables
 if "GOOGLE_API_KEY" in os.environ:
@@ -59,5 +60,11 @@ if go and user_q.strip():
     final = result.get("output", result)
     st.subheader("Answer")
     st.write(final)
+
+    import matplotlib.pyplot as plt
+    figs = [plt.figure(n) for n in plt.get_fignums()]
+    for f in figs:
+        st.pyplot(f)
+    plt.close("all")    
 elif go:
     st.warning("Please enter a question.")
