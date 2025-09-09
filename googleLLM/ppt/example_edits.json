@@ -1,0 +1,52 @@
+{
+  "edits": [
+    {
+      "op": "replace_text",
+      "slide_index": 0,
+      "find": "Breifing",
+      "replace": "Briefing",
+      "shape_idx": null,
+      "case_sensitive": false,
+      "first_only": true
+    },
+    {
+      "op": "add_bullets",
+      "slide_index": 1,
+      "shape_idx": 2,
+      "bullets": [
+        "Goal: reduce churn",
+        "KPI: +10% NPS",
+        "Owner: Data Team"
+      ],
+      "mode": "append",
+      "level": 0
+    },
+    {
+      "op": "edit_table_cell",
+      "slide_index": 2,
+      "table_idx": 1,
+      "row": 1,
+      "col": 2,
+      "new_text": "82%"
+    },
+    {
+      "op": "add_image",
+      "slide_index": 3,
+      "image_path": "example_chart.png",
+      "left_in": 1.0,
+      "top_in": 2.0,
+      "width_in": 5.0
+    },
+    {
+      "op": "add_new_slide",
+      "layout": "title_and_content",
+      "title": "Summary",
+      "bullets": [
+        "Project scope",
+        "Timeline",
+        "Next steps"
+      ],
+      "align_center": false
+    }
+  ]
+}
