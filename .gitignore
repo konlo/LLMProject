@@ -1,2 +1,6 @@
 **/.venv/
 **/cache/
+.DS_Store
+googleLLM/.DS_Store
+googleLLM/exports/
+googleLLM/pandasai.log
