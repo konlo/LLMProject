@@ -8,10 +8,12 @@ from dotenv import load_dotenv
 from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
-
+from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
 # 콜백 수집용
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks import StdOutCallbackHandler
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 import matplotlib.pyplot as plt
 
@@ -73,6 +75,42 @@ try:
 except Exception:
     pass
 
+
+# =============================
+# Chat Template + History + Runnable 래핑
+# =============================
+history = StreamlitChatMessageHistory(key="lc_msgs:dfchat")
+
+TOOL_HINT = (
+    "When you use the python tool, return ONLY raw Python code "
+    "(no backticks, no 'Action:' or 'Output:' lines, no prose). "
+    "Put each statement on its own line. If you use 'pd', add 'import pandas as pd'. "
+    "For charts, import matplotlib.pyplot as plt and end with 'plt.show()'."
+)
+
+# prompt는 {input}과 chat_history를 받도록 정의 (MessagesPlaceholder와 key 매칭)
+prompt = ChatPromptTemplate.from_messages([
+    ("system",
+     "You are a concise, correct data analyst. "
+     "Use Python when helpful. Keep plots around 600px width (e.g., figsize=(6,4), dpi=100). "
+     f"{TOOL_HINT}"),
+    MessagesPlaceholder("chat_history"),
+    ("human", "{input}")
+])
+
+chain = prompt | agent
+
+# 히스토리를 자동 주입/기록하는 래퍼
+# - input_messages_key="input": 사용자 입력이 들어오는 키
+# - history_messages_key="chat_history": prompt의 MessagesPlaceholder 이름
+agent_with_history = RunnableWithMessageHistory(
+    chain,
+    lambda session_id: history,
+    input_messages_key="input",
+    history_messages_key="chat_history",
+)
+
+
 st.write("---")
 user_q = st.chat_input("Ask a question about your data (예: '상위 5개 항목의 TBW를 보여줘')")
 
@@ -97,9 +135,12 @@ if user_q:
     with st.spinner("Thinking with Gemini..."):
         # invoke 시 return_intermediate_steps를 config로 넘기지 않는다
         # (상단에서 agent.return_intermediate_steps = True로 설정)
-        result = agent.invoke(
+        result = agent_with_history.invoke(
             {"input": f"{TOOL_HINT}\n\n{user_q}"},
-            {"callbacks": [st_cb, collector, StdOutCallbackHandler()]},
+            {
+                "callbacks": [st_cb, collector, StdOutCallbackHandler()],
+                "configurable": {"session_id": "konlo_ssid"},
+            }
         )
 
     st.success("Done.")
