@@ -1,3 +1,9 @@
+# Gemini + LangChain 기반 Streamlit 앱
+# DataFrame을 ReAct + Python tool로 분석하고 히스토리를 관리
+# UI에서 실행 로그, 답변, intermediate steps와 이벤트 타임라인 제공
+# 작성자: konlona / 2025-09-21
+
+
 import os
 import sys
 import pandas as pd

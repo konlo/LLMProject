@@ -1,3 +1,9 @@
+# 요약: Streamlit 앱이 CSV를 로드/미리보기하고, Gemini(LangChain) ReAct 에이전트를 구성해 `df`를 파이썬 도구로 분석합니다.
+# 요약: 툴 구성 — `python_repl_ast`, `load_loading_csv`(보조 DataFrame), `describe_columns`, `save_plots_zip`; RunnableWithMessageHistory로 히스토리 유지.
+# 요약: 실시간 실행 로그·최종 답변·플롯을 표시하고, intermediate_steps와 CollectAllCallback 타임라인으로 실행 내역을 시각화합니다.
+# 작성자: konlona · 날짜: 2025-09-21 (KST)
+
+
 import os
 import sys
 import io
