@@ -4,4 +4,4 @@ litellm
 google-generativeai
 streamlit
 langchain
-langchain-openai   
+langchain-openai==1.7.2
