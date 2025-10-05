@@ -57,7 +57,7 @@ PAGE_ICON = "✨"
 PAGE_LAYOUT = "wide"
 CHAT_INPUT_PLACEHOLDER = (
     "Ask about your data (예: 'telemetry_value 컬럼의 이상점을 박스 플롯으로 검토해줘', "
-    "'describe_columns로 이상점의 경계값을 알려줘', '
+    "'describe_columns로 이상점의 경계값을 알려줘', "
     "'load_df_b() 후 df_A와 조인해서 분석해줘')"
 )
 DEFAULT_DATA_DIR = os.getenv("DATA_DIR", "/Users/najongseong/dataset")
@@ -483,7 +483,7 @@ def build_agent_with_history(agent: AgentExecutor, history: StreamlitChatMessage
     )
 
 
-def handle_user_query(agent_with_history: RunnableWithMessageHistory, history: StreamlitChatMessageHistory) -> None:
+def handle_user_query(agent_with_history: RunnableWithMessageHistory) -> None:
     st.write("---")
     user_question = st.chat_input(CHAT_INPUT_PLACEHOLDER)
     if not user_question:
@@ -577,7 +577,7 @@ def main() -> None:
     agent = create_agent_executor(llm, tools, prompt)
     agent_with_history = build_agent_with_history(agent, history)
 
-    handle_user_query(agent_with_history, history)
+    handle_user_query(agent_with_history)
     render_history_sidebar(history)
 
 
