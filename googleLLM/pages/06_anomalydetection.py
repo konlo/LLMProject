@@ -199,6 +199,7 @@ if not GOOGLE_API_KEY:
 # =============================
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
+    # model="gemini-2.5-flash-lite",
     api_key=GOOGLE_API_KEY,
     temperature=0,
     max_tokens=None,
@@ -431,13 +432,6 @@ tools = [
     align_time_buckets,
 ]
 
-# =============================
-# 📜 Prompt (이상점 검토 강화)
-# =============================
-df_head_txt = df.head().to_string(index=False)
-
-
-
 import os
 # ... (생략된 import문) ...
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -528,6 +522,24 @@ react_prompt = ChatPromptTemplate.from_messages([
      "- If you output 'Action:' without 'Action Input:', immediately continue with only 'Action Input: <...>'.\n"
      "- Do not wrap code in backticks.\n"
      "- Keep Action Input minimal, valid, and executable.\n\n"
+     """
+        **실행 규칙:**
+        1. 각 도구는 최대 3번까지만 시도
+        2. 동일한 오류가 2번 발생하면 즉시 다른 방법 시도
+        3. 무한 루프 감지 시 자동으로 중단
+
+        **오류별 대처법:**
+        - TypeError (sort_values): → np.argsort() 또는 sorted() 사용
+        - KeyError: → 컬럼명 확인 후 재시도
+        - AttributeError: → 객체 타입 확인 후 적절한 메서드 사용Í
+
+        **상태 체크포인트:**
+        매 3번째 액션마다:
+        - 진행 상황 요약
+        - 목표 달성도 확인
+        - 필요시 전략 수정
+    """
+
      "ALWAYS follow this exact format:\n"
      "Question: <restated question>\n"
      "Thought: <brief reasoning>\n"
@@ -541,6 +553,8 @@ react_prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder("chat_history", optional=True),
     ("human", "{input}"),
     ("assistant", "{agent_scratchpad}"),
+
+
 ])
 
 # =============================
@@ -581,7 +595,7 @@ user_q = st.chat_input(
 
 if user_q:
     # 채팅 히스토리 기록
-    history.add_user_message(user_q)
+    # history.add_user_message(user_q)
 
     left, right = st.columns([1, 1])
     with left:
@@ -612,7 +626,7 @@ if user_q:
     with right:
         st.subheader("Answer")
         # LLM의 최종 답변을 채팅창에 표시
-        history.add_ai_message(final)
+        # history.add_ai_message(final)
         st.write(final)
 
         # 플롯 렌더링

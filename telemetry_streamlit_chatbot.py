@@ -12,7 +12,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+<<<<<<< HEAD
 from langchain_google_genai import ChatGoogleGenerativeAI
+=======
+from langchain_openai import ChatOpenAI
+>>>>>>> 4fb564c (anomaly detection file 수정)
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
@@ -182,6 +186,7 @@ def render_anomaly_visualisation(
     st.plotly_chart(fig, use_container_width=True)
 
 
+<<<<<<< HEAD
 def prepare_chat_model() -> Optional[ChatGoogleGenerativeAI]:
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -196,6 +201,14 @@ def prepare_chat_model() -> Optional[ChatGoogleGenerativeAI]:
             max_retries=2,
             streaming=True,
         )
+=======
+def prepare_chat_model() -> Optional[ChatOpenAI]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        return ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+>>>>>>> 4fb564c (anomaly detection file 수정)
     except Exception:
         return None
 
@@ -324,7 +337,11 @@ def main() -> None:
     chat_model = prepare_chat_model()
     if chat_model is None:
         st.warning(
+<<<<<<< HEAD
             "GOOGLE_API_KEY 환경 변수가 설정되지 않아 챗봇 응답을 생성할 수 없습니다."
+=======
+            "OPENAI_API_KEY 환경 변수가 설정되지 않아 챗봇 응답을 생성할 수 없습니다."
+>>>>>>> 4fb564c (anomaly detection file 수정)
         )
 
     if "chat_history" not in st.session_state:
@@ -343,7 +360,11 @@ def main() -> None:
         if chat_model is None:
             assistant_reply = (
                 "현재 LLM API 키가 없어 자동 응답을 제공할 수 없습니다. "
+<<<<<<< HEAD
                 "환경 변수 GOOGLE_API_KEY를 설정한 뒤 새로고침 해주세요."
+=======
+                "환경 변수 OPENAI_API_KEY를 설정한 뒤 새로고침 해주세요."
+>>>>>>> 4fb564c (anomaly detection file 수정)
             )
         else:
             context_payload = BASE_SYSTEM_PROMPT.format(
