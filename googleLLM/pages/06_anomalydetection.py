@@ -66,7 +66,7 @@ st.title("✨ DataFrame Chatbot (Gemini + LangChain)")
 st.caption("Gemini + Python tool(ReAct)로 DataFrame을 분석하고 이상점을 검토합니다.")
 
 # =============================
-# 📁 CSV 로드 및 환경 변수
+# 📁 데이터 로드 및 환경 변수
 # =============================
 # ⚠️ DATA_DIR 초기화
 DEFAULT_DATA_DIR = os.getenv("DATA_DIR", "/Users/najongseong/dataset")
@@ -88,13 +88,24 @@ DATA_DIR = st.session_state["DATA_DIR"]
 DFB_DEFAULT = os.path.join(DATA_DIR, DFB_DEFAULT_NAME)
 
 # -----------------------------------------------------------------------
-# 🔄 CSV 파일 목록 표시 및 선택 로직
+# 🔄 데이터 파일 로더 공통 유틸 및 선택 로직
 # -----------------------------------------------------------------------
+
+SUPPORTED_EXTENSIONS = (".csv", ".parquet")
+
+def _read_table(path: str) -> pd.DataFrame:
+    """확장자에 맞게 CSV 또는 Parquet를 로드합니다."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".csv":
+        return pd.read_csv(path)
+    if ext == ".parquet":
+        return pd.read_parquet(path)
+    raise ValueError(f"지원하지 않는 파일 형식입니다: {ext}")
 
 def load_df_A(path: str, display_name: str):
     """지정된 경로에서 df_A를 로드하고 세션 상태를 업데이트하는 헬퍼 함수"""
     try:
-        new_df = pd.read_csv(path)
+        new_df = _read_table(path)
         st.session_state["df_A_data"] = new_df
         st.session_state["df_A_name"] = display_name
         # ✅ 선택한 파일의 전체 경로를 csv_path에 정확히 연결
@@ -105,14 +116,14 @@ def load_df_A(path: str, display_name: str):
         st.session_state["df_A_name"] = "Load Failed"
         # 로드 실패 시 경로도 초기화
         st.session_state["csv_path"] = "" 
-        return False, f"CSV 로드 실패: {path}\n{e}"
+        return False, f"데이터 로드 실패: {path}\n{e}"
 
 with st.sidebar:
     st.markdown("### 🗂️ 1. 데이터 폴더 설정")
     
     # DATA_DIR 입력 필드
     new_data_dir = st.text_input(
-        "Enter CSV Directory Path",
+        "Enter Data Directory Path",
         value=st.session_state["DATA_DIR"],
         key="data_dir_input"
     )
@@ -135,17 +146,17 @@ with st.sidebar:
     DFB_DEFAULT = os.path.join(DATA_DIR, DFB_DEFAULT_NAME)
 
     st.markdown("---")
-    st.markdown("### 📄 2. df_A CSV 파일 선택")
+    st.markdown("### 📄 2. df_A 데이터 파일 선택")
     st.caption(f"Search directory: `{DATA_DIR}`")
     
-    # DATA_DIR에서 CSV 파일 목록 가져오기
-    csv_files = []
+    # DATA_DIR에서 지원 파일 목록 가져오기
+    data_files = []
     try:
         if os.path.isdir(DATA_DIR):
             for f in os.listdir(DATA_DIR):
-                if f.lower().endswith('.csv'):
-                    csv_files.append(f)
-            csv_files.sort()
+                if f.lower().endswith(SUPPORTED_EXTENSIONS):
+                    data_files.append(f)
+            data_files.sort()
         else:
             st.warning("유효한 데이터 디렉토리를 설정해주세요.")
     except Exception as e:
@@ -153,8 +164,8 @@ with st.sidebar:
 
     # 파일 선택 SelectBox
     selected_file = st.selectbox(
-        "Select CSV file for df_A",
-        options=["--- Select a file ---"] + csv_files,
+        "Select data file for df_A",
+        options=["--- Select a file ---"] + data_files,
         key="file_selector"
     )
     
@@ -179,10 +190,10 @@ with st.sidebar:
 
 # 최종 df 결정
 df = st.session_state["df_A_data"]
-CSV_PATH_DISPLAY = st.session_state["df_A_name"]
+DATA_PATH_DISPLAY = st.session_state["df_A_name"]
 
 if df is None:
-    st.error("분석할 DataFrame (df_A)을 로드하지 못했습니다. 유효한 디렉토리와 CSV 파일을 선택해주세요.")
+    st.error("분석할 DataFrame (df_A)을 로드하지 못했습니다. 유효한 디렉토리와 지원되는 데이터 파일을 선택해주세요.")
     st.stop()
 # -----------------------------------------------------------------------
 # 이하 LLM 및 Agent 로직은 변경 없이 유지됩니다.
@@ -212,7 +223,7 @@ llm = ChatGoogleGenerativeAI(
 # 🖼️ Preview
 # =============================
 st.subheader("Preview")
-st.write(f"**Loaded CSV for df_A:** `{CSV_PATH_DISPLAY}` (Shape: {df.shape})")
+st.write(f"**Loaded file for df_A:** `{DATA_PATH_DISPLAY}` (Shape: {df.shape})")
 st.dataframe(df.head(10), use_container_width=True)
 
 # =============================
@@ -241,15 +252,15 @@ pytool = PythonAstREPLTool(
     )
 )
 
-# 2) 동적 CSV 로드 (loading_df)
+# 2) 동적 파일 로드 (loading_df)
 @tool
 def load_loading_csv(filename: str) -> str:
-    """Load a CSV from DATA_DIR into 'loading_df' (for ad-hoc analysis). Pass only file name (e.g., 'loading_test.csv')."""
+    """Load a CSV or Parquet from DATA_DIR into 'loading_df'. Pass only file name (e.g., 'sample.csv' or 'sample.parquet')."""
     # 툴 실행 시 현재 DATA_DIR을 사용
     current_data_dir = st.session_state.get("DATA_DIR", DEFAULT_DATA_DIR)
     path = os.path.join(current_data_dir, filename)
     try:
-        new_df = pd.read_csv(path)
+        new_df = _read_table(path)
     except Exception as e:
         return f"Failed to load {path}: {e}"
     pytool.globals["loading_df"] = new_df
@@ -301,7 +312,7 @@ def save_plots_zip() -> str:
 @tool
 def load_df_b(filename: str = "") -> str:
     """
-    Load a CSV into 'df_B'. If 'filename' is empty, defaults to 'telemetry_raw.csv' under DATA_DIR.
+    Load a CSV or Parquet into 'df_B'. If 'filename' is empty, defaults to 'telemetry_raw.csv' under DATA_DIR.
     Example: load_df_b()
     """
     current_data_dir = st.session_state.get("DATA_DIR", DEFAULT_DATA_DIR)
@@ -314,7 +325,7 @@ def load_df_b(filename: str = "") -> str:
         show_name = os.path.basename(path)
 
     try:
-        new_df = pd.read_csv(path)
+        new_df = _read_table(path)
     except Exception as e:
         return f"Failed to load df_B from {path}: {e}"
     pytool.globals["df_B"] = new_df
@@ -450,11 +461,11 @@ import seaborn as sns
 # 🚀 App 시작 및 설정
 # ... (App 시작 및 설정 코드 생략) ...
 # =============================
-# 📁 CSV 로드 및 환경 변수
-# ... (CSV 로드 및 환경 변수 코드 생략) ...
+# 📁 데이터 로드 및 환경 변수
+# ... (데이터 로드 및 환경 변수 코드 생략) ...
 # -----------------------------------------------------------------------
-# 🔄 CSV 파일 목록 표시 및 선택 로직
-# ... (CSV 로드 및 선택 로직 코드 생략) ...
+# 🔄 데이터 파일 목록 표시 및 선택 로직
+# ... (데이터 로드 및 선택 로직 코드 생략) ...
 # -----------------------------------------------------------------------
 # 이하 LLM 및 Agent 로직은 변경 없이 유지됩니다.
 # -----------------------------------------------------------------------
