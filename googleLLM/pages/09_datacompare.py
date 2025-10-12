@@ -128,6 +128,7 @@ def _init_session_state():
         ("df_B_data", None),
         ("df_B_name", "No Data"),
         ("csv_b_path", ""),
+        ("explanation_lang", "English"),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -175,6 +176,16 @@ def load_df_B(path: str, display_name: str):
 # 📚 사이드바: 폴더/파일 선택
 # =============================
 with st.sidebar:
+    st.markdown("### 💬 EDA 설명 언어")
+    lang_options = ["English", "한국어"]
+    current_lang = st.session_state.get("explanation_lang", "English")
+    selected_idx = lang_options.index(current_lang) if current_lang in lang_options else 0
+    st.session_state["explanation_lang"] = st.selectbox(
+        "Agent 요약 언어",
+        options=lang_options,
+        index=selected_idx,
+    )
+
     st.markdown("### 🗂️ 1. 데이터 폴더 설정")
     new_data_dir = st.text_input("Enter Data Directory Path",
                                  value=st.session_state["DATA_DIR"],
@@ -795,22 +806,39 @@ def anomaly_isoforest(cols: str, contamination: Any = 0.01, random_state: Any = 
     contamination_val = _parse_float(contamination, 0.01)
     rs_val = _parse_int(random_state, 42)
 
-    s = str(cols).strip()
-    try:
-        if s.startswith("{") and s.endswith("}"):
-            import json
-            obj = json.loads(s)
-            s = obj.get("cols") or obj.get("columns") or obj.get("features") or ""
-    except Exception:
-        pass
-    for prefix in ("cols=", "columns=", "features="):
-        if s.lower().startswith(prefix):
-            s = s.split("=", 1)[1].strip()
-            break
-    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
-        s = s[1:-1]
+    raw_cols = cols
+    targets: List[str] = []
 
-    targets = [c.strip() for c in s.split(",") if c.strip()]
+    def _normalize_iterable(values) -> List[str]:
+        return [str(c).strip() for c in values if str(c).strip()]
+
+    if isinstance(raw_cols, (list, tuple, set)):
+        targets = _normalize_iterable(raw_cols)
+        s = ""
+    else:
+        s = str(raw_cols).strip()
+        try:
+            if s.startswith("{") and s.endswith("}"):
+                import json
+                obj = json.loads(s)
+                extracted = obj.get("cols") or obj.get("columns") or obj.get("features") or ""
+                if isinstance(extracted, (list, tuple, set)):
+                    targets = _normalize_iterable(extracted)
+                    s = ""
+                else:
+                    s = str(extracted or "").strip()
+        except Exception:
+            pass
+        if not targets:
+            for prefix in ("cols=", "columns=", "features="):
+                if s.lower().startswith(prefix):
+                    s = s.split("=", 1)[1].strip()
+                    break
+        if not targets:
+            if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+                s = s[1:-1]
+            targets = [c.strip() for c in s.split(",") if c.strip()]
+
     if not targets:
         return "Please provide cols."
     for c in targets:
@@ -972,6 +1000,220 @@ def plot_outliers(col: str, on: str = "datetime", sample: Any = 2000) -> str:
     return f"[plot_outliers] col='{s}', outliers={int(flags.sum())}, bounds=({lo:.3f},{hi:.3f})"
 
 @tool
+def plot_outlier_overview(top_n: Any = 20) -> str:
+    """
+    컬럼별 IQR 이상치율을 막대 그래프로 요약 표시합니다.
+    auto_outlier_eda 또는 rank_outlier_columns 결과가 없으면 즉석에서 계산합니다.
+    """
+    A = pytool.globals.get("df_A")
+    if A is None:
+        return "df_A not loaded."
+
+    top_n_val = _parse_int(top_n, 20)
+
+    rank_df = pytool.globals.get("df_outlier_rank")
+    if rank_df is None or not isinstance(rank_df, pd.DataFrame) or "outlier_rate_%" not in rank_df.columns:
+        rows = []
+        for c in A.columns:
+            if pd.api.types.is_numeric_dtype(A[c]) and A[c].nunique(dropna=True) >= 10:
+                x = pd.to_numeric(A[c], errors="coerce")
+                q1, q3 = x.quantile(0.25), x.quantile(0.75)
+                iqr = q3 - q1
+                if not np.isfinite(iqr) or iqr == 0:
+                    continue
+                lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+                rate = float(((x < lo) | (x > hi)).mean() * 100.0)
+                rows.append({"column": c, "outlier_rate_%": rate})
+        if not rows:
+            return "No IQR-detectable outliers."
+        rank_df = pd.DataFrame(rows).sort_values("outlier_rate_%", ascending=False)
+        pytool.globals["df_outlier_rank"] = rank_df
+
+    top = rank_df.head(top_n_val)
+    if top.empty:
+        return "No IQR-detectable outliers."
+
+    plt.figure(figsize=(8, max(3, 0.35 * len(top))))
+    plt.barh(top["column"][::-1], top["outlier_rate_%"][::-1])
+    plt.xlabel("Outlier rate (%)")
+    plt.title(f"Top {min(top_n_val, len(top))} outlier columns (IQR)")
+    plt.tight_layout()
+    return f"[plot_outlier_overview] top_n={top_n_val}"
+
+@tool
+def plot_outliers_multi(cols: str, on: str = "datetime", sample: Any = 1500) -> str:
+    """
+    여러 수치 컬럼을 빠르게 훑어보는 소형 라인 플롯(스파크라인) 모음.
+    IQR 경계 밖 점을 작은 마커로 표시합니다. 시간 컬럼이 있다면 그 축을 공유합니다.
+    """
+    A = pytool.globals.get("df_A")
+    if A is None:
+        return "df_A not loaded."
+
+    targets = [c.strip() for c in (cols or "").split(",") if c.strip()]
+    if not targets:
+        return "Please provide cols (comma-separated)."
+    for c in targets:
+        if c not in A.columns:
+            return f"Column '{c}' not found in df_A."
+
+    ts = None
+    if on in A.columns:
+        ts = pd.to_datetime(A[on], errors="coerce")
+
+    n = len(targets)
+    sample_val = _parse_int(sample, 1500)
+    fig, axes = plt.subplots(n, 1, figsize=(10, max(2.5, 1.5 * n)), sharex=ts is not None)
+    if n == 1:
+        axes = [axes]
+
+    any_plotted = False
+    for ax, c in zip(axes, targets):
+        x = pd.to_numeric(A[c], errors="coerce")
+        dfv = pd.DataFrame({c: x})
+        if ts is not None:
+            dfv[on] = ts
+            dfv = dfv.dropna(subset=[on, c]).sort_values(on)
+        else:
+            dfv = dfv.dropna(subset=[c])
+
+        if dfv.empty:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            ax.set_ylabel(c, rotation=0, labelpad=35, ha="right", va="center")
+            continue
+
+        if sample_val and len(dfv) > sample_val:
+            step = max(1, len(dfv) // sample_val)
+            dfv = dfv.iloc[::step, :]
+
+        q1, q3 = dfv[c].quantile(0.25), dfv[c].quantile(0.75)
+        iqr = q3 - q1
+        if not np.isfinite(iqr) or iqr == 0:
+            lo, hi = q1, q3
+            flags = pd.Series(False, index=dfv.index)
+        else:
+            lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            flags = (dfv[c] < lo) | (dfv[c] > hi)
+
+        if ts is not None:
+            ax.plot(dfv[on], dfv[c], linewidth=1)
+            out = dfv[flags]
+            if len(out) > 0:
+                ax.scatter(out[on], out[c], s=10)
+        else:
+            ax.plot(dfv.index, dfv[c], linewidth=1)
+            out = dfv[flags]
+            if len(out) > 0:
+                ax.scatter(out.index, out[c], s=10)
+
+        ax.set_ylabel(c, rotation=0, labelpad=35, ha="right", va="center")
+        ax.grid(False)
+        any_plotted = True
+
+    if ts is not None:
+        axes[-1].set_xlabel(on)
+    if any_plotted:
+        fig.suptitle("Outliers overview (IQR) — small multiples", y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    return f"[plot_outliers_multi] cols={targets}"
+
+@tool
+def plot_compare_timeseries(col: str, on: str = "datetime") -> str:
+    """
+    df_join에서 특정 컬럼의 A/B 시계열을 그리고, 절대 차이를 별도 축에 표시합니다.
+    """
+    dj = pytool.globals.get("df_join")
+    if dj is None:
+        return "df_join not found. Run compare_on_keys() first."
+
+    colA, colB = f"{col}__A", f"{col}__B"
+    if colA not in dj.columns or colB not in dj.columns:
+        return f"Column '{col}' not found in df_join."
+    if on not in dj.columns:
+        return f"Time column '{on}' not found in df_join."
+
+    dfv = dj[[on, colA, colB]].copy()
+    dfv[on] = pd.to_datetime(dfv[on], errors="coerce")
+    dfv[colA] = pd.to_numeric(dfv[colA], errors="coerce")
+    dfv[colB] = pd.to_numeric(dfv[colB], errors="coerce")
+    dfv = dfv.dropna().sort_values(on)
+    if dfv.empty:
+        return "No comparable rows with valid timestamps."
+
+    dfv["abs_diff"] = (dfv[colA] - dfv[colB]).abs()
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(dfv[on], dfv[colA], label="A")
+    plt.plot(dfv[on], dfv[colB], label="B", alpha=0.8)
+    plt.title(f"{col}: A vs B")
+    plt.legend()
+    plt.tight_layout()
+
+    plt.figure(figsize=(10, 2.8))
+    plt.plot(dfv[on], dfv["abs_diff"])
+    plt.title(f"{col}: |A - B|")
+    plt.tight_layout()
+    return f"[plot_compare_timeseries] col='{col}'"
+
+@tool
+def stl_plot(col: str, on: str = "datetime") -> str:
+    """
+    stl_decompose 이후 df_A_stl에 저장된 trend/seasonal/resid 시계열을 한 번에 시각화합니다.
+    """
+    stl_df = pytool.globals.get("df_A_stl")
+    if stl_df is None or not isinstance(stl_df, pd.DataFrame) or stl_df.empty:
+        return "Run stl_decompose first."
+    if on not in stl_df.columns:
+        return f"Time column '{on}' not found in df_A_stl."
+    components = [f"{col}_trend", f"{col}_seasonal", f"{col}_resid"]
+    missing = [c for c in components if c not in stl_df.columns]
+    if missing:
+        return f"Missing STL components: {missing}"
+    chart = stl_df.copy()
+    chart[on] = pd.to_datetime(chart[on], errors="coerce")
+    chart = chart.dropna(subset=[on]).sort_values(on)
+    if chart.empty:
+        return "No valid timestamps in df_A_stl."
+    plt.figure(figsize=(10, 5))
+    for comp, label in zip(components, ["trend", "seasonal", "resid"]):
+        plt.plot(chart[on], chart[comp], label=label)
+    plt.title(f"STL components: {col}")
+    plt.legend()
+    plt.tight_layout()
+    return f"[stl_plot] col='{col}'"
+
+@tool
+def corr_heatmap(cols: str = "") -> str:
+    """
+    선택한 컬럼(또는 전체 수치형)의 상관계수 히트맵을 렌더링합니다.
+    """
+    A = pytool.globals.get("df_A")
+    if A is None:
+        return "df_A not loaded."
+
+    targets = [c.strip() for c in (cols or "").split(",") if c.strip()]
+    if targets:
+        for c in targets:
+            if c not in A.columns:
+                return f"Column '{c}' not found."
+        dfv = A[targets].apply(pd.to_numeric, errors="coerce")
+    else:
+        dfv = A.select_dtypes(include=[np.number])
+
+    if dfv.shape[1] < 2:
+        return "Need at least 2 numeric columns."
+
+    corr = dfv.corr(numeric_only=True)
+    plt.figure(figsize=(max(5, 0.6 * corr.shape[1]), max(4, 0.6 * corr.shape[0])))
+    plt.imshow(corr, aspect="auto", cmap="coolwarm", vmin=-1, vmax=1)
+    plt.xticks(range(corr.shape[1]), corr.columns, rotation=90)
+    plt.yticks(range(corr.shape[0]), corr.index)
+    plt.colorbar(label="corr")
+    plt.title("Correlation Heatmap")
+    plt.tight_layout()
+    return "[corr_heatmap] done"
+
+@tool
 def auto_outlier_eda(top_n: Any = 10, on: str = "datetime") -> str:
     """
     Run an outlier-first EDA pipeline on df_A:
@@ -1071,6 +1313,11 @@ tools = [
     select_numeric_candidates,
     rank_outlier_columns,
     plot_outliers,
+    plot_outlier_overview,
+    plot_outliers_multi,
+    plot_compare_timeseries,
+    stl_plot,
+    corr_heatmap,
     auto_outlier_eda,
 ]
 
@@ -1209,7 +1456,93 @@ if user_q:
     final = result.get("output", "Agent가 최종 답변을 생성하지 못했습니다.")
     with right:
         st.subheader("Answer")
-        st.write(final)
+        final_text = final if isinstance(final, str) else str(final)
+        lang_choice = st.session_state.get("explanation_lang", "English")
+        final_display = final_text
+        if lang_choice == "한국어" and final_text.strip():
+            try:
+                translation_prompt = (
+                    "다음 분석 결과를 자연스럽고 간결한 한국어로 설명해줘.\n\n"
+                    f"{final_text}"
+                )
+                translated_msg = llm.invoke(translation_prompt)
+                translated_text = getattr(translated_msg, "content", None)
+                if translated_text:
+                    final_display = translated_text
+            except Exception as e:
+                st.warning(f"한국어 번역 중 오류가 발생했습니다: {e}")
+        st.write(final_display)
+
+        st.markdown("---")
+        st.subheader("EDA Visualizations")
+        visuals_rendered = False
+
+        outlier_rank_df = pytool.globals.get("df_outlier_rank")
+        if isinstance(outlier_rank_df, pd.DataFrame) and not outlier_rank_df.empty:
+            if {"column", "outlier_rate_%"} <= set(outlier_rank_df.columns):
+                visuals_rendered = True
+                top_outliers = outlier_rank_df.head(15).set_index("column")["outlier_rate_%"]
+                st.markdown("**Top Outlier Columns (IQR %)**")
+                st.bar_chart(top_outliers)
+
+        stl_df = pytool.globals.get("df_A_stl")
+        if isinstance(stl_df, pd.DataFrame) and not stl_df.empty:
+            stl_chart = stl_df.copy()
+            time_col = stl_chart.columns[0]
+            if time_col in stl_chart.columns:
+                stl_chart[time_col] = pd.to_datetime(stl_chart[time_col], errors="coerce")
+                stl_chart = stl_chart.dropna(subset=[time_col]).set_index(time_col).sort_index()
+                numeric_cols = [c for c in stl_chart.columns if pd.api.types.is_numeric_dtype(stl_chart[c])]
+                if numeric_cols:
+                    visuals_rendered = True
+                    st.markdown("**STL Decomposition Components**")
+                    st.line_chart(stl_chart[numeric_cols])
+
+        rolling_df = pytool.globals.get("df_A_rolling")
+        if isinstance(rolling_df, pd.DataFrame) and not rolling_df.empty:
+            roll_chart = rolling_df.copy()
+            time_col = roll_chart.columns[0]
+            if time_col in roll_chart.columns:
+                roll_chart[time_col] = pd.to_datetime(roll_chart[time_col], errors="coerce")
+                roll_chart = roll_chart.dropna(subset=[time_col]).set_index(time_col).sort_index()
+                metric_cols = [c for c in roll_chart.columns if pd.api.types.is_numeric_dtype(roll_chart[c])]
+                if metric_cols:
+                    visuals_rendered = True
+                    st.markdown("**Rolling Statistics**")
+                    st.line_chart(roll_chart[metric_cols])
+
+        topn_df = pytool.globals.get("df_topN")
+        if isinstance(topn_df, pd.DataFrame) and not topn_df.empty:
+            visuals_rendered = True
+            st.markdown("**Top-N Entities**")
+            st.dataframe(topn_df, use_container_width=True)
+
+        current_df_a = pytool.globals.get("df_A")
+        if isinstance(current_df_a, pd.DataFrame) and not current_df_a.empty:
+            outlier_cols = [c for c in current_df_a.columns if c.endswith("_is_outlier_iqr")]
+            if "isoforest_outlier" in current_df_a.columns or outlier_cols:
+                visuals_rendered = True
+                st.markdown("**Outlier Flags Overview**")
+                with st.container():
+                    if "isoforest_outlier" in current_df_a.columns:
+                        iso_counts = current_df_a["isoforest_outlier"].value_counts(dropna=False)
+                        st.write(
+                            {
+                                "isoforest_outlier=True": int(iso_counts.get(True, 0)),
+                                "isoforest_outlier=False": int(iso_counts.get(False, 0)),
+                            }
+                        )
+                    if outlier_cols:
+                        outlier_summary = (
+                            current_df_a[outlier_cols]
+                            .apply(lambda s: int(s.fillna(False).sum()))
+                            .rename("outlier_count")
+                            .to_frame()
+                        )
+                        st.table(outlier_summary)
+
+        if not visuals_rendered:
+            st.caption("아직 표시할 EDA 시각화가 없습니다. auto_outlier_eda(), stl_decompose(), rolling_stats() 등을 먼저 실행해보세요.")
 
         # 현재까지 생성된 matplotlib 플롯 렌더링
         figs = [plt.figure(n) for n in plt.get_fignums()]
