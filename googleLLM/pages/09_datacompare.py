@@ -118,6 +118,7 @@ st.caption("두 CSV 비교 + 이상점 중심 EDA(원클릭) + SSD Telemetry 유
 DEFAULT_DATA_DIR = os.getenv("DATA_DIR", "/Users/najongseong/dataset")
 DFB_DEFAULT_NAME = "telemetry_raw.csv"  # df_B 기본 파일명
 SUPPORTED_EXTENSIONS = (".csv", ".parquet")
+TIME_COLUMN_CANDIDATES = ["datetime", "timestamp", "ts", "time", "event_time", "eventtime", "date", "created_at"]
 
 def _init_session_state():
     for key, default in [
@@ -136,6 +137,26 @@ def _init_session_state():
             st.session_state[key] = default
 
 _init_session_state()
+
+def _resolve_time_column(df: Optional[pd.DataFrame], preferred: str) -> Optional[str]:
+    """Return a best-effort time column name in df matching preferred or common aliases."""
+    if df is None or not isinstance(df, pd.DataFrame) or not preferred:
+        return None
+    if preferred in df.columns:
+        return preferred
+    lower_map = {c.lower(): c for c in df.columns}
+    pref_lower = preferred.lower()
+    if pref_lower in lower_map:
+        return lower_map[pref_lower]
+    for alias in TIME_COLUMN_CANDIDATES:
+        if alias == preferred:
+            continue
+        if alias in df.columns:
+            return alias
+        alias_lower = alias.lower()
+        if alias_lower in lower_map:
+            return lower_map[alias_lower]
+    return None
 
 def _read_table(path: str) -> pd.DataFrame:
     """확장자에 맞게 CSV 또는 Parquet를 로드합니다."""
@@ -466,15 +487,18 @@ def align_time_buckets(target: str = "A", column: str = "datetime", freq: str = 
     cur = pytool.globals.get("df_B") if t == "B" else pytool.globals.get("df_A")
     if cur is None:
         return f"df_{t} not loaded."
-    if column not in cur.columns:
+    time_col = _resolve_time_column(cur, column)
+    if time_col is None:
         return f"Column '{column}' not in df_{t}."
     tmp = cur.copy()
-    tmp[column] = pd.to_datetime(tmp[column], errors="coerce")
+    tmp[time_col] = pd.to_datetime(tmp[time_col], errors="coerce")
+    if column not in tmp.columns:
+        tmp[column] = tmp[time_col]
     bucket_col = f"{column}_bucket"
     tmp[bucket_col] = tmp[column].dt.to_period(freq).dt.to_timestamp()
     pytool.globals[f"df_{t}_bucketed"] = tmp
     prev = tmp[[bucket_col]].head().to_markdown(index=False)
-    return f"Created df_{t}_bucketed with '{bucket_col}' at freq={freq}.\nPreview:\n{prev}"
+    return f"Created df_{t}_bucketed with '{bucket_col}' at freq={freq} using '{time_col}'.\nPreview:\n{prev}"
 
 # ---------- 비교 유틸 ----------
 @tool
@@ -599,22 +623,29 @@ def make_timesafe(column: str = "datetime", tz: str = "UTC") -> str:
     Parse df_A/df_B[<column>] to datetime; if tz provided, localize/convert. Updates in-place.
     """
     changed = []
+    preferred = column or "datetime"
     for name in ["df_A", "df_B"]:
         cur = pytool.globals.get(name)
-        if cur is None or column not in cur.columns:
+        if cur is None:
+            continue
+        time_col = _resolve_time_column(cur, preferred)
+        if time_col is None:
             continue
         tmp = cur.copy()
-        tmp[column] = pd.to_datetime(tmp[column], errors="coerce")
+        tmp[time_col] = pd.to_datetime(tmp[time_col], errors="coerce")
+        target_col = preferred
+        if target_col not in tmp.columns or target_col != time_col:
+            tmp[target_col] = tmp[time_col]
         if tz:
             try:
-                if tmp[column].dt.tz is None:
-                    tmp[column] = tmp[column].dt.tz_localize(tz)
+                if tmp[target_col].dt.tz is None:
+                    tmp[target_col] = tmp[target_col].dt.tz_localize(tz)
                 else:
-                    tmp[column] = tmp[column].dt.tz_convert(tz)
+                    tmp[target_col] = tmp[target_col].dt.tz_convert(tz)
             except Exception:
                 pass
         pytool.globals[name] = tmp
-        changed.append(f"{name}({len(tmp)} rows)")
+        changed.append(f"{name}({len(tmp)} rows, time_col='{time_col}')")
     if not changed:
         return f"No target column '{column}' found in df_A/df_B."
     return f"[make_timesafe] column='{column}', tz='{tz}' → updated: {', '.join(changed)}"
@@ -699,10 +730,13 @@ def rolling_stats(cols: str, window: str = "24H", on: str = "datetime") -> str:
     for c in targets:
         if c not in A.columns:
             return f"Column '{c}' not found in df_A."
-    if on not in A.columns:
+    time_col = _resolve_time_column(A, on)
+    if time_col is None:
         return f"Time column '{on}' not found."
     tmp = A.copy()
-    tmp[on] = pd.to_datetime(tmp[on], errors="coerce")
+    tmp[time_col] = pd.to_datetime(tmp[time_col], errors="coerce")
+    if on not in tmp.columns:
+        tmp[on] = tmp[time_col]
     tmp = tmp.sort_values(on).set_index(on)
     out = pd.DataFrame(index=tmp.index)
     for c in targets:
@@ -746,9 +780,10 @@ def stl_decompose(col: str, period: Any = 24, on: str = "datetime") -> str:
 
     if s not in A.columns:
         return f"Column '{s}' not found."
-    if on not in A.columns:
+    time_col = _resolve_time_column(A, on)
+    if time_col is None:
         return f"Time column '{on}' not found."
-    ts = pd.to_datetime(A[on], errors="coerce")
+    ts = pd.to_datetime(A[time_col], errors="coerce")
     x = pd.to_numeric(A[s], errors="coerce")
     ok = ts.notna() & x.notna()
     ts, x = ts[ok], x[ok]
@@ -1003,9 +1038,12 @@ def plot_outliers(col: str, on: str = "datetime", sample: Any = 2000) -> str:
     plt.tight_layout()
 
     # Timeseries (if available)
-    if on in A.columns:
-        ts = pd.to_datetime(A[on], errors="coerce")
-        dfv = pd.DataFrame({on: ts, s: x, "__out": flags}).dropna().sort_values(on)
+    time_col = _resolve_time_column(A, on)
+    if time_col in A.columns:
+        ts = pd.to_datetime(A[time_col], errors="coerce")
+        dfv = pd.DataFrame({time_col: ts, s: x, "__out": flags}).dropna().sort_values(time_col)
+        if on not in dfv.columns:
+            dfv[on] = dfv[time_col]
         if sample_val and len(dfv) > sample_val:
             step = max(1, len(dfv)//sample_val)
             dfv = dfv.iloc[::step, :]
@@ -1078,8 +1116,9 @@ def plot_outliers_multi(cols: str, on: str = "datetime", sample: Any = 1500) -> 
             return f"Column '{c}' not found in df_A."
 
     ts = None
-    if on in A.columns:
-        ts = pd.to_datetime(A[on], errors="coerce")
+    time_col = _resolve_time_column(A, on)
+    if time_col in A.columns:
+        ts = pd.to_datetime(A[time_col], errors="coerce")
 
     n = len(targets)
     sample_val = _parse_int(sample, 1500)
@@ -1092,8 +1131,10 @@ def plot_outliers_multi(cols: str, on: str = "datetime", sample: Any = 1500) -> 
         x = pd.to_numeric(A[c], errors="coerce")
         dfv = pd.DataFrame({c: x})
         if ts is not None:
-            dfv[on] = ts
-            dfv = dfv.dropna(subset=[on, c]).sort_values(on)
+            dfv[time_col] = ts
+            dfv = dfv.dropna(subset=[time_col, c]).sort_values(time_col)
+            if on not in dfv.columns:
+                dfv[on] = dfv[time_col]
         else:
             dfv = dfv.dropna(subset=[c])
 
@@ -1149,14 +1190,17 @@ def plot_compare_timeseries(col: str, on: str = "datetime") -> str:
     colA, colB = f"{col}__A", f"{col}__B"
     if colA not in dj.columns or colB not in dj.columns:
         return f"Column '{col}' not found in df_join."
-    if on not in dj.columns:
+    time_col = _resolve_time_column(dj, on)
+    if time_col is None:
         return f"Time column '{on}' not found in df_join."
 
-    dfv = dj[[on, colA, colB]].copy()
-    dfv[on] = pd.to_datetime(dfv[on], errors="coerce")
+    dfv = dj[[time_col, colA, colB]].copy()
+    dfv[time_col] = pd.to_datetime(dfv[time_col], errors="coerce")
     dfv[colA] = pd.to_numeric(dfv[colA], errors="coerce")
     dfv[colB] = pd.to_numeric(dfv[colB], errors="coerce")
-    dfv = dfv.dropna().sort_values(on)
+    dfv = dfv.dropna().sort_values(time_col)
+    if on not in dfv.columns:
+        dfv[on] = dfv[time_col]
     if dfv.empty:
         return "No comparable rows with valid timestamps."
 
@@ -1183,14 +1227,17 @@ def stl_plot(col: str, on: str = "datetime") -> str:
     stl_df = pytool.globals.get("df_A_stl")
     if stl_df is None or not isinstance(stl_df, pd.DataFrame) or stl_df.empty:
         return "Run stl_decompose first."
-    if on not in stl_df.columns:
+    time_col = _resolve_time_column(stl_df, on)
+    if time_col is None:
         return f"Time column '{on}' not found in df_A_stl."
     components = [f"{col}_trend", f"{col}_seasonal", f"{col}_resid"]
     missing = [c for c in components if c not in stl_df.columns]
     if missing:
         return f"Missing STL components: {missing}"
     chart = stl_df.copy()
-    chart[on] = pd.to_datetime(chart[on], errors="coerce")
+    chart[time_col] = pd.to_datetime(chart[time_col], errors="coerce")
+    if on not in chart.columns:
+        chart[on] = chart[time_col]
     chart = chart.dropna(subset=[on]).sort_values(on)
     if chart.empty:
         return "No valid timestamps in df_A_stl."
@@ -1277,10 +1324,11 @@ def auto_outlier_eda(top_n: Any = 10, on: str = "datetime") -> str:
                "**Top outlier columns:**\n" + rank_df.head(20).to_markdown(index=False)]
 
     # 3) STL (선택)
-    if on in A.columns and len(top_cols) > 0 and STL is not None:
+    time_col = _resolve_time_column(A, on)
+    if time_col is not None and len(top_cols) > 0 and STL is not None:
         try:
             col = top_cols[0]
-            ts = pd.to_datetime(A[on], errors="coerce")
+            ts = pd.to_datetime(A[time_col], errors="coerce")
             y = pd.to_numeric(A[col], errors="coerce")
             ok = ts.notna() & y.notna()
             ts, y = ts[ok], y[ok]
@@ -1424,7 +1472,6 @@ agent = AgentExecutor(
     verbose=True,
     return_intermediate_steps=True,
     max_iterations=20,
-    early_stopping_method="generate",
     handle_parsing_errors=(
         "PARSING ERROR. DO NOT APOLOGIZE. Immediately continue by outputting ONLY:\n"
         "Action: describe_columns\n"
