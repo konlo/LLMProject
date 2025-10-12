@@ -129,6 +129,8 @@ def _init_session_state():
         ("df_B_name", "No Data"),
         ("csv_b_path", ""),
         ("explanation_lang", "English"),
+        ("df_A_signature", ""),
+        ("df_B_signature", ""),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -263,6 +265,22 @@ with st.sidebar:
 df_A: Optional[pd.DataFrame] = st.session_state["df_A_data"]
 df_B: Optional[pd.DataFrame] = st.session_state["df_B_data"]
 
+def _signature(df: Optional[pd.DataFrame], path: str) -> str:
+    if df is None:
+        return "none"
+    rows, cols = df.shape
+    return f"{path}|{rows}x{cols}"
+
+current_sig_A = _signature(df_A, st.session_state.get("csv_path", ""))
+prev_sig_A = st.session_state.get("df_A_signature", "")
+dataset_changed = current_sig_A != prev_sig_A
+st.session_state["df_A_signature"] = current_sig_A
+
+current_sig_B = _signature(df_B, st.session_state.get("csv_b_path", ""))
+prev_sig_B = st.session_state.get("df_B_signature", "")
+df_b_changed = current_sig_B != prev_sig_B
+st.session_state["df_B_signature"] = current_sig_B
+
 if df_A is None:
     st.error("분석할 DataFrame (df_A)을 로드하지 못했습니다. 유효한 디렉토리와 지원되는 데이터 파일을 선택해주세요.")
     st.stop()
@@ -281,6 +299,8 @@ if df_B is not None:
 # 💬 Chat history
 # =============================
 history = StreamlitChatMessageHistory(key="lc_msgs:dfchat")
+if dataset_changed or df_b_changed:
+    history.clear()
 
 # =============================
 # 🛠️ Tools 정의
@@ -1330,7 +1350,8 @@ if not GOOGLE_API_KEY:
     st.stop()
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    # model="gemini-2.5-flash",
+    model="gemini-2.5-flash-lite",
     api_key=GOOGLE_API_KEY,
     temperature=0,
     max_tokens=None,
@@ -1552,7 +1573,7 @@ if user_q:
             st.pyplot(f, width="stretch")
         plt.close("all")
 
-    # intermediate steps (디버깅 정보)
+    # intermediate steps (디버깅 정보)xf
     st.write("---")
     st.subheader("intermediate_steps (툴 실행 상세)")
     steps = result.get("intermediate_steps", [])
